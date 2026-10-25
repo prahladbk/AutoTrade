@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { AlertTriangle, Download, Play, Save, Square, Trash2 } from 'lucide-react'
+import { EmaResultDetails, EmaSupplyForm } from './EmaSupplyPanel'
 
 type Strategy = { key: string; name: string; description: string; defaults: Record<string, number | string | boolean> }
 type Trade = {
@@ -22,6 +23,9 @@ type Trade = {
   r_multiple: number | null
   holding_bars: number
   simulation_status: string
+  relative_volume?: number | null
+  zone_id?: string
+  prior_touches?: number | null
 }
 
 type Result = {
@@ -66,6 +70,9 @@ type Result = {
   symbols_checked: number
   symbols_failed: string[]
   data_source: string
+  rejection_breakdown?: Record<string, number>
+  average_realized_r?: number | null
+  short_sale_warning?: string
 }
 
 type Run = { id: string; strategy_id: string; status: string; created_at: string; completed_at: string | null; error_text: string | null }
@@ -74,6 +81,12 @@ type WorkbenchConfig = { version: number; strategy_id: string; common: Record<st
 
 const API = '/api'
 const dateValue = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+const calendarDays = (start: string, end: string) => {
+  const startMs = Date.parse(`${start}T00:00:00Z`)
+  const endMs = Date.parse(`${end}T00:00:00Z`)
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return NaN
+  return Math.round((endMs - startMs) / 86_400_000) + 1
+}
 const dayOffset = (days: number) => { const date = new Date(); date.setDate(date.getDate() - days); return dateValue(date) }
 const money = (value: number | null) => value === null ? 'Not available' : `₹${value.toLocaleString('en-IN', { maximumFractionDigits: 2 })}`
 const timeLabel = (value: string) => new Intl.DateTimeFormat('en-IN', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(value))
@@ -160,12 +173,18 @@ function StrategyLab({ tokenReady }: { tokenReady: boolean }) {
   const active = strategies.find((strategy) => strategy.key === activeStrategy)
   const strategyConfig = strategyConfigs[activeStrategy] ?? active?.defaults ?? {}
   const activeResult = results[activeStrategy]
-  const days = Math.floor((new Date(String(common.end_date)).getTime() - new Date(String(common.start_date)).getTime()) / 86_400_000) + 1
-  const timeframe = String(common.timeframe)
+  const emaTimeframe = String(strategyConfig.timeframe || '5m')
+  const emaIntraday = ['3m', '5m', '15m'].includes(emaTimeframe)
+  const emaStart = String(strategyConfig.start_date || (emaIntraday ? dayOffset(27) : common.start_date))
+  const emaEnd = String(strategyConfig.end_date || (emaIntraday ? dateValue(new Date()) : common.end_date))
+  const rangeStart = activeStrategy === 'ema_supply_demand' ? emaStart : String(common.start_date)
+  const rangeEnd = activeStrategy === 'ema_supply_demand' ? emaEnd : String(common.end_date)
+  const days = calendarDays(rangeStart, rangeEnd)
+  const timeframe = activeStrategy === 'ema_supply_demand' ? emaTimeframe : String(common.timeframe)
   const valid = Number(common.starting_capital) > 0 && days > 0 && days <= 365
     && Number(common.risk_percent) > 0 && Number(common.risk_percent) <= 2
     && Number(common.aggregate_open_risk_percent) > 0 && Number(common.aggregate_open_risk_percent) <= 5
-    && (timeframe !== '5m' && timeframe !== '15m' || days <= 28)
+    && (!['3m', '5m', '15m'].includes(timeframe) || days <= 28)
     && Number(strategyConfig.fast_period ?? 1) < Number(strategyConfig.slow_period ?? 2)
 
   function updateStrategy(key: string, value: unknown) {
@@ -188,7 +207,20 @@ function StrategyLab({ tokenReady }: { tokenReady: boolean }) {
       if (key === 'source' || key === 'effective_date') return [key, value || null]
       return [key, value === '' ? null : Number(value)]
     }))
-    return { version: 1, strategy_id: activeStrategy, common: { ...common }, strategy: { ...strategyConfig }, costs: normalizeCosts }
+    const payloadCommon = { ...common }
+    if (activeStrategy === 'ema_supply_demand') {
+      payloadCommon.timeframe = emaTimeframe
+      payloadCommon.start_date = emaStart
+      payloadCommon.end_date = emaEnd
+      payloadCommon.entry_start_time = String(strategyConfig.entry_start_time ?? '09:30')
+      payloadCommon.entry_cutoff = String(strategyConfig.entry_cutoff ?? '13:00')
+      payloadCommon.square_off_time = String(strategyConfig.square_off_time ?? '15:15')
+      payloadCommon.max_holding_bars = Number(strategyConfig.max_holding_bars ?? 8)
+      payloadCommon.volume_filter_enabled = Boolean(strategyConfig.volume_filter_enabled)
+      payloadCommon.min_relative_volume = Number(strategyConfig.min_relative_volume ?? 1.2)
+      payloadCommon.volume_lookback = Number(strategyConfig.volume_lookback_sessions ?? 20)
+    }
+    return { version: 1, strategy_id: activeStrategy, common: payloadCommon, strategy: { ...strategyConfig }, costs: normalizeCosts }
   }
 
   async function runBacktest() {
@@ -352,6 +384,9 @@ function StrategyLab({ tokenReady }: { tokenReady: boolean }) {
       </div>
       {active && <div className="active-strategy-description"><b>{active.name}</b><span>{active.description}</span><span className="config-version">CONFIG V1</span></div>}
 
+      {activeStrategy === 'ema_supply_demand' ? (
+        <EmaSupplyForm strategy={strategyConfig} common={common} costs={costs} universeOptions={universeOptions} startDate={emaStart} endDate={emaEnd} updateStrategy={updateStrategy} updateCommon={updateCommon} updateCost={updateCost} buildConfig={currentConfig} />
+      ) : (
       <div className="lab-config-grid">
         <section className="lab-config-group strategy-rules">
           <h3>Strategy Rules</h3>
@@ -375,7 +410,7 @@ function StrategyLab({ tokenReady }: { tokenReady: boolean }) {
           <h3>Universe & Session</h3>
           <label className="lab-field"><span>Universe</span><select value={String(common.universe)} onChange={(event) => updateCommon('universe', event.target.value)}><option value="nifty100_current">Nifty 100 · current members</option><option value="selected_symbols">Selected stocks</option><option value="all_nse_equities">All NSE cash equities</option></select></label>
           {common.universe === 'selected_symbols' && <label className="lab-field"><span>Stocks</span><select multiple size={5} value={Array.isArray(common.symbols) ? common.symbols.map(String) : []} onChange={(event) => updateCommon('symbols', Array.from(event.target.selectedOptions, (option) => option.value))}>{universeOptions.map((stock) => <option key={stock.symbol} value={stock.symbol}>{stock.symbol} · {stock.company}</option>)}</select></label>}
-          <label className="lab-field"><span>Timeframe</span><select value={String(common.timeframe)} onChange={(event) => updateCommon('timeframe', event.target.value)}>{['5m', '15m', '30m', '1h', '4h'].map((value) => <option key={value}>{value}</option>)}</select></label>
+          <label className="lab-field"><span>Timeframe</span><select value={String(common.timeframe)} onChange={(event) => updateCommon('timeframe', event.target.value)}>{['3m', '5m', '15m', '30m', '1h', '4h'].map((value) => <option key={value}>{value}</option>)}</select></label>
           <div className="lab-date-fields"><label className="lab-field"><span>Start date</span><input type="date" value={String(common.start_date)} onChange={(event) => updateCommon('start_date', event.target.value)} /></label><label className="lab-field"><span>End date</span><input type="date" value={String(common.end_date)} onChange={(event) => updateCommon('end_date', event.target.value)} /></label></div>
           <label className="lab-field"><span>Entry start</span><input type="time" value={String(common.entry_start_time)} onChange={(event) => updateCommon('entry_start_time', event.target.value)} /></label>
           <label className="lab-field"><span>Last entry</span><input type="time" value={String(common.entry_cutoff)} onChange={(event) => updateCommon('entry_cutoff', event.target.value)} /></label>
@@ -399,13 +434,14 @@ function StrategyLab({ tokenReady }: { tokenReady: boolean }) {
           </div>
         </section>
       </div>
+      )}
 
       <div className="lab-run-bar">
         <div className="run-status"><span className={runStatus.includes('Running') ? 'run-dot running' : 'run-dot'} />{runStatus || `${days} days · ${timeframe} candles · Nifty 100`}</div>
         {activeRunId && runStatus.includes('Running') && <button type="button" className="quiet-button danger-button" onClick={() => void cancelRun()}><Square size={13} /> Cancel run</button>}
         <button type="button" className="scan-button" disabled={!tokenReady || !valid || Boolean(activeRunId && runStatus.includes('Running'))} onClick={() => void runBacktest()}><Play size={15} /> Run backtest</button>
       </div>
-      {(!valid || !tokenReady) && <div className="lab-notice"><AlertTriangle size={15} />{!tokenReady ? 'Upstox access token is not configured.' : 'Check dates, risk, position limits, and timeframe history limits.'}</div>}
+      {(!valid || !tokenReady) && <div className="lab-notice"><AlertTriangle size={15} />{!tokenReady ? 'Upstox access token is not configured.' : !Number.isFinite(days) || days <= 0 ? 'The start date has to be on or before the end date.' : ['3m', '5m', '15m'].includes(timeframe) && days > 28 ? `${timeframe} candles cover 28 days. This range is ${days} days, so move the start date later or choose 30m, 1h, or 4h.` : 'Check the risk and position limits.'}</div>}
       {error && <div className="lab-error" role="alert">{error}</div>}
 
       <div className="lab-history">
@@ -423,14 +459,18 @@ function StrategyLab({ tokenReady }: { tokenReady: boolean }) {
         <div className="results-notices"><div className="warning-strip"><AlertTriangle size={15} />{activeResult.survivorship_warning}</div>{activeResult.cost_warning && <div className="warning-strip"><AlertTriangle size={15} />{activeResult.cost_warning}</div>}</div>
         <div className="result-kpis">
           {[
-            ['Starting capital', money(activeResult.starting_capital)], ['Ending equity', money(activeResult.ending_equity)],
-            ['Gross P&L', money(activeResult.gross_pnl)], ['Net P&L', money(activeResult.net_pnl)],
+            ['Starting capital', money(activeResult.starting_capital)],
+            [activeResult.costs_configured ? 'Ending equity' : 'Ending equity (gross)', money(activeResult.costs_configured ? activeResult.ending_equity : activeResult.ending_equity_gross)],
+            ['Gross P&L', money(activeResult.gross_pnl)],
+            ['Net P&L', activeResult.net_pnl === null ? 'Enter cost rates' : money(activeResult.net_pnl)],
             ['Trades · win rate', `${activeResult.trade_count} · ${activeResult.win_rate.toFixed(1)}%`],
             ['Gross profit / loss', `${money(activeResult.gross_profit)} / ${money(-activeResult.gross_loss)}`],
             ['Expectancy', money(activeResult.expectancy_net ?? activeResult.expectancy_gross)],
             ['Profit factor', activeResult.profit_factor?.toFixed(2) ?? '—'],
             ['Max drawdown', `${activeResult.max_drawdown_percent.toFixed(2)}%`],
-            ['Total costs', money(activeResult.total_costs)],
+            ['Total costs', activeResult.total_costs === null ? 'Enter cost rates' : money(activeResult.total_costs)],
+            ['Risk / reward', `1 : ${strategyConfig.reward_to_risk ?? '—'}`],
+            ...(activeResult.strategy_id === 'ema_supply_demand' ? [['Average realized R', activeResult.average_realized_r == null ? '—' : String(activeResult.average_realized_r)] as [string, string]] : []),
             ['Rejected signals', String(activeResult.signals_rejected)],
             ['Stocks evaluated', `${activeResult.symbols_checked} · ${activeResult.symbols_failed.length} failed`],
           ].map(([label, value]) => <div className="result-kpi" key={label}><small>{label}</small><b>{value}</b></div>)}
@@ -439,18 +479,19 @@ function StrategyLab({ tokenReady }: { tokenReady: boolean }) {
           <div className="chart-title">Equity curve · {activeResult.costs_configured ? 'net of configured charges' : 'gross, before costs'}</div>
           {linePoints ? <svg viewBox="0 0 400 100" preserveAspectRatio="none" role="img" aria-label="Backtest equity curve"><polyline points={linePoints} fill="none" stroke="#25765d" strokeWidth="2" vectorEffect="non-scaling-stroke" /></svg> : <div className="chart-empty">No completed trades to plot.</div>}
         </div>
+        {activeResult.rejection_breakdown && <EmaResultDetails result={activeResult} />}
         <div className="lab-subheading"><h3>Trade ledger <span>{visibleTrades.length} shown</span></h3><div className="trade-filters"><input value={tradeSearch} placeholder="Filter symbol" onChange={(event) => setTradeSearch(event.target.value)} /><select value={tradeFilter} onChange={(event) => setTradeFilter(event.target.value)}><option value="all">All trades</option><option value="winners">Winners</option><option value="losers">Losers</option></select></div></div>
         <div className="table-scroll"><table className="lab-table"><thead><tr><th>Stock</th><th>Side</th><th>Entry / exit</th><th>Entry signal</th><th>Entry</th><th>Stop</th><th>Target</th><th>Qty</th><th>Gross P&amp;L</th><th>Net P&amp;L</th><th>Exit reason</th><th>R</th></tr></thead><tbody>
           {visibleTrades.map((trade, index) => <tr key={`${trade.symbol}-${trade.entry_time}-${index}`} onClick={() => setSelectedTrade(trade)}><td>{trade.symbol}</td><td>{trade.direction}</td><td>{timeLabel(trade.entry_time)}<small>{timeLabel(trade.exit_time)}</small></td><td>{trade.entry_signal}</td><td>{money(trade.entry_price)}</td><td>{money(trade.initial_stop)}</td><td>{money(trade.target)}</td><td>{trade.quantity}</td><td className={trade.gross_pnl >= 0 ? 'positive' : 'negative'}>{money(trade.gross_pnl)}</td><td>{money(trade.net_pnl)}</td><td>{trade.exit_reason}</td><td>{trade.r_multiple?.toFixed(2) ?? '—'}</td></tr>)}
           {!visibleTrades.length && <tr><td colSpan={12} className="no-trades">No trades match the current filter.</td></tr>}
-+        </tbody></table></div>
-+        {selectedTrade && <div className="trade-detail"><div><b>{selectedTrade.symbol} · {selectedTrade.direction} · {selectedTrade.simulation_status}</b><button type="button" className="quiet-button" onClick={() => setSelectedTrade(null)}>Close</button></div><p>{selectedTrade.entry_signal}; {selectedTrade.holding_bars} bars held; planned risk {money(selectedTrade.planned_risk)}; exit: {selectedTrade.exit_reason}.</p><p>Fees: {selectedTrade.costs ? JSON.stringify(selectedTrade.costs) : 'Not configured; net P&L withheld.'}</p></div>}
-+        <div className="lab-subheading"><h3>Stock performance <span>{activeResult.stock_performance.length} constituents</span></h3></div>
-+        <div className="table-scroll"><table className="lab-table"><thead><tr><th>Stock</th><th>Signals</th><th>Trades</th><th>Wins</th><th>Losses</th><th>Win rate</th><th>Gross P&amp;L</th><th>Net P&amp;L</th><th>Costs</th></tr></thead><tbody>
-+          {activeResult.stock_performance.map((stock) => <tr key={String(stock.symbol)}><td>{String(stock.symbol)}</td><td>{String(stock.signals)}</td><td>{String(stock.trades)}</td><td>{String(stock.wins)}</td><td>{String(stock.losses)}</td><td>{String(stock.win_rate)}%</td><td>{money(Number(stock.gross_pnl))}</td><td>{money(stock.net_pnl === null ? null : Number(stock.net_pnl))}</td><td>{money(stock.costs === null ? null : Number(stock.costs))}</td></tr>)}
-+        </tbody></table></div>
-+      </div>}
-+    </section>
+        </tbody></table></div>
+        {selectedTrade && <div className="trade-detail"><div><b>{selectedTrade.symbol} · {selectedTrade.direction} · {selectedTrade.simulation_status}</b><button type="button" className="quiet-button" onClick={() => setSelectedTrade(null)}>Close</button></div><p>{selectedTrade.entry_signal}; {selectedTrade.holding_bars} bars held; planned risk {money(selectedTrade.planned_risk)}; exit: {selectedTrade.exit_reason}.{selectedTrade.relative_volume != null ? ` Relative volume ${selectedTrade.relative_volume}.` : ''}{selectedTrade.zone_id ? ` Zone ${selectedTrade.zone_id}, ${selectedTrade.prior_touches ?? 0} prior touches.` : ''}</p><p>Fees: {selectedTrade.costs ? JSON.stringify(selectedTrade.costs) : 'Not configured; net P&L withheld.'}</p></div>}
+        <div className="lab-subheading"><h3>Stock performance <span>{activeResult.stock_performance.length} constituents</span></h3></div>
+        <div className="table-scroll"><table className="lab-table"><thead><tr><th>Stock</th><th>Signals</th><th>Trades</th><th>Wins</th><th>Losses</th><th>Win rate</th><th>Gross P&amp;L</th><th>Net P&amp;L</th><th>Costs</th></tr></thead><tbody>
+          {activeResult.stock_performance.map((stock) => <tr key={String(stock.symbol)}><td>{String(stock.symbol)}</td><td>{String(stock.signals)}</td><td>{String(stock.trades)}</td><td>{String(stock.wins)}</td><td>{String(stock.losses)}</td><td>{String(stock.win_rate)}%</td><td>{money(Number(stock.gross_pnl))}</td><td>{money(stock.net_pnl === null ? null : Number(stock.net_pnl))}</td><td>{money(stock.costs === null ? null : Number(stock.costs))}</td></tr>)}
+        </tbody></table></div>
+      </div>}
+    </section>
   )
 }
 

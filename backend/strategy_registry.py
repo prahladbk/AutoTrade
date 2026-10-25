@@ -3,6 +3,8 @@ from datetime import time
 from typing import Optional
 from zoneinfo import ZoneInfo
 
+from backend.ema_zones import DEFAULTS as EMA_SUPPLY_DEMAND_DEFAULTS
+
 
 INDIA_TZ = ZoneInfo("Asia/Kolkata")
 
@@ -24,6 +26,13 @@ STRATEGIES = {
     "mean_reversion": StrategySpec("mean_reversion", "Mean Reversion", "Extended-price reversal toward VWAP or a moving average.", {"reference": "vwap", "deviation_percent": 1.0, "rsi_period": 14, "rsi_long": 30, "rsi_short": 70, "stop_lookback": 5, "reward_to_risk": 2.0, "direction": "long_short"}, 15),
     "vwap_reclaim": StrategySpec("vwap_reclaim", "VWAP Reclaim", "Completed-bar cross back through session VWAP.", {"ema_period": 21, "relative_volume": 1.0, "stop_lookback": 5, "reward_to_risk": 2.0, "direction": "long_short"}, 22),
     "donchian_breakout": StrategySpec("donchian_breakout", "Donchian Breakout", "Break of the prior Donchian channel, excluding the signal bar.", {"entry_lookback": 20, "exit_lookback": 10, "atr_period": 14, "relative_volume": 1.0, "stop_lookback": 5, "reward_to_risk": 3.0, "direction": "long_short"}, 21),
+    "ema_supply_demand": StrategySpec(
+        "ema_supply_demand",
+        "EMA 7/21 + Supply/Demand",
+        "Intraday EMA trend with confirmed supply and demand zones. Historical and paper simulation only; no live orders.",
+        EMA_SUPPLY_DEMAND_DEFAULTS,
+        22,
+    ),
 }
 
 

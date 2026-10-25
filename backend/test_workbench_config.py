@@ -19,6 +19,7 @@ from backend.main import (
     get_strategy_presets,
     normalize_workbench_config,
     save_strategy_preset,
+    select_paper_symbols,
     update_strategy_preset,
 )
 from backend.strategy_registry import STRATEGIES
@@ -50,6 +51,24 @@ class WorkbenchConfigTests(unittest.TestCase):
             normalize_workbench_config("sma_crossover", {"common": {"universe": "selected_symbols"}})
         config = normalize_workbench_config("sma_crossover", {"common": {"universe": "selected_symbols", "symbols": ["TCS"]}})
         self.assertEqual(config["common"]["symbols"], ["TCS"])
+
+    def test_three_minute_ema_history_and_paper_symbol_cap(self):
+        config = normalize_workbench_config("ema_supply_demand", {
+            "common": {"timeframe": "3m", "period_days": 10, "universe": "selected_symbols", "symbols": ["tcs", "infy"]},
+        })
+        self.assertEqual(config["common"]["timeframe"], "3m")
+        self.assertEqual(select_paper_symbols(config), ["TCS", "INFY"])
+        wide = normalize_workbench_config("ema_supply_demand", {
+            "common": {"universe": "selected_symbols", "symbols": [f"S{index}" for index in range(12)]},
+        })
+        self.assertEqual(len(select_paper_symbols(wide)), 10)
+        with self.assertRaises(HTTPException):
+            normalize_workbench_config("ema_supply_demand", {"common": {"timeframe": "3m", "period_days": 29}})
+        with self.assertRaises(HTTPException) as context:
+            normalize_workbench_config("ema_supply_demand", {"strategy": {"fast_period": 30, "slow_period": 7}})
+        self.assertIn("EMA", context.exception.detail)
+        with self.assertRaises(HTTPException):
+            select_paper_symbols({"common": {"universe": "nifty100_current", "symbols": ["TCS"]}})
 
     def test_every_registered_strategy_normalizes_with_defaults(self):
         for key in STRATEGIES:

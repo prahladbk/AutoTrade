@@ -17,8 +17,10 @@ def bars_from_closes(closes):
 
 
 class StrategyRegistryTests(unittest.TestCase):
-    def test_registry_has_seven_distinct_strategy_keys(self):
-        self.assertEqual(len(STRATEGIES), 7)
+    def test_registry_has_the_builtin_strategy_keys(self):
+        self.assertEqual(len(STRATEGIES), 8)
+        self.assertIn("ema_supply_demand", STRATEGIES)
+        self.assertEqual(STRATEGIES["sma_crossover"].defaults["fast_period"], 6)
 
     def test_sma_strategy_signals_only_on_the_cross_bar(self):
         bars = bars_from_closes([100.0] * 30 + [110.0, 111.0, 112.0])

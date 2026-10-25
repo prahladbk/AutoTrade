@@ -36,6 +36,43 @@ type Trade = {
   order_id: string | null
 }
 
+type View = 'overview' | 'signals' | 'lab' | 'trades'
+
+const pageCopy: Record<View, { section: string; detail: string; eyebrow: string; code: string; title: string; copy: string }> = {
+  overview: {
+    section: 'MARKET MONITOR',
+    detail: 'NIFTY 100',
+    eyebrow: 'SYSTEMATIC SCAN',
+    code: 'CL-04',
+    title: 'Market overview',
+    copy: 'A focused read on Nifty 100 price action, updated when you run a scan.',
+  },
+  signals: {
+    section: 'SCAN RESULTS',
+    detail: 'NIFTY 100',
+    eyebrow: 'CROSSOVER SCAN',
+    code: 'CL-04',
+    title: 'Scan results',
+    copy: 'Stocks where the 6-period SMA crossed above the 30-period SMA on the latest completed 4-hour bar.',
+  },
+  lab: {
+    section: 'STRATEGY LAB',
+    detail: 'HISTORICAL',
+    eyebrow: 'RESEARCH WORKBENCH',
+    code: 'CL-05',
+    title: 'Strategy Lab',
+    copy: 'Configure a strategy and run a historical simulation. This screen does not place live orders.',
+  },
+  trades: {
+    section: 'TRADE LOG',
+    detail: 'LOCAL RECORD',
+    eyebrow: 'EXECUTION RECORD',
+    code: 'CL-06',
+    title: 'Trade log',
+    copy: 'Recorded executions from scripts and manual entries. This screen does not place orders.',
+  },
+}
+
 const API = '/api'
 const formatTime = (value?: string) => value
   ? new Intl.DateTimeFormat('en-IN', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value))
@@ -57,6 +94,7 @@ function App() {
   const [tokenReady, setTokenReady] = useState(false)
   const [scanning, setScanning] = useState(false)
   const [message, setMessage] = useState('')
+  const [view, setView] = useState<View>('overview')
   async function loadDashboard() {
     try {
       const [statusResponse, scanResponse, tradeResponse] = await Promise.all([
@@ -96,27 +134,32 @@ function App() {
     }
   }
 
+  const page = pageCopy[view]
+  const showScan = view === 'overview' || view === 'signals'
+
   return (
     <div className="app-shell">
       <aside className="rail">
-        <a className="brand" href="#overview" aria-label="Crossline dashboard">
+        <button className="brand" type="button" aria-label="Crossline dashboard" onClick={() => setView('overview')}>
           <span className="brand-mark"><Activity size={19} strokeWidth={2.2} /></span>
           <span>crossline<span className="brand-period">.</span></span>
-        </a>
+        </button>
         <div className="rail-label">WORKSPACE</div>
-        <a className="rail-link active" href="#overview"><BarChart3 size={17} /> Overview</a>
-        <a className="rail-link" href="#signals"><ScanLine size={17} /> Scan results</a>
-        <a className="rail-link" href="#strategy-lab"><TrendingUp size={17} /> Strategy Lab</a>
-        <a className="rail-link" href="#trades"><TrendingUp size={17} /> Trade log</a>
+        <nav className="rail-nav" aria-label="Workspace">
+          <button className={`rail-link${view === 'overview' ? ' active' : ''}`} type="button" aria-current={view === 'overview' ? 'page' : undefined} onClick={() => setView('overview')}><BarChart3 size={17} /> Overview</button>
+          <button className={`rail-link${view === 'signals' ? ' active' : ''}`} type="button" aria-current={view === 'signals' ? 'page' : undefined} onClick={() => setView('signals')}><ScanLine size={17} /> Scan results</button>
+          <button className={`rail-link${view === 'lab' ? ' active' : ''}`} type="button" aria-current={view === 'lab' ? 'page' : undefined} onClick={() => setView('lab')}><TrendingUp size={17} /> Strategy Lab</button>
+          <button className={`rail-link${view === 'trades' ? ' active' : ''}`} type="button" aria-current={view === 'trades' ? 'page' : undefined} onClick={() => setView('trades')}><ShieldCheck size={17} /> Trade log</button>
+        </nav>
         <div className="rail-bottom">
           <div className="market-chip"><span className="market-dot" /> NSE MARKET<br /><b>4H · CLOSED CANDLES</b></div>
           <div className="rail-foot">STRATEGY DESK <span>01 / 01</span></div>
         </div>
       </aside>
 
-      <main className="main-content" id="overview">
+      <main className="main-content">
         <header className="topbar">
-          <div className="breadcrumb">MARKET MONITOR <span>/</span> NIFTY 100</div>
+          <div className="breadcrumb">{page.section} <span>/</span> {page.detail}</div>
           <div className="topbar-right">
             <div className={`connection ${apiOnline ? 'is-online' : ''}`}><span />{apiOnline ? 'API CONNECTED' : 'API OFFLINE'}</div>
             <div className="avatar">P</div>
@@ -125,73 +168,47 @@ function App() {
 
         <section className="page-intro">
           <div>
-            <div className="eyebrow"><span className="eyebrow-line" /> SYSTEMATIC SCAN <span className="eyebrow-code">CL-04</span></div>
-            <h1>Market overview<span>.</span></h1>
-            <p className="intro-copy">A focused read on Nifty 100 price action, updated when you run a scan.</p>
+            <div className="eyebrow"><span className="eyebrow-line" /> {page.eyebrow} <span className="eyebrow-code">{page.code}</span></div>
+            <h1>{page.title}<span>.</span></h1>
+            <p className="intro-copy">{page.copy}</p>
           </div>
-          <button className="scan-button" type="button" onClick={runScan} disabled={scanning || !apiOnline || !tokenReady}>
+          {showScan && <button className="scan-button" type="button" onClick={runScan} disabled={scanning || !apiOnline || !tokenReady}>
             <ScanLine size={16} /> {scanning ? 'Scanning universe…' : 'Run market scan'}
-          </button>
+          </button>}
         </section>
 
-        {message && <div className={`notice ${message.startsWith('Scan complete') ? 'notice-success' : ''}`} role="status">
+        {showScan && message && <div className={`notice ${message.startsWith('Scan complete') ? 'notice-success' : ''}`} role="status">
           {message.startsWith('Scan complete') ? <Check size={16} /> : <CircleAlert size={16} />}{message}
         </div>}
-        {!tokenReady && apiOnline && <div className="notice notice-warn"><CircleHelp size={16} />Configure <code>UPSTOX_ACCESS_TOKEN</code> in the backend environment to scan market data.</div>}
+        {showScan && !tokenReady && apiOnline && <div className="notice notice-warn"><CircleHelp size={16} />Configure <code>UPSTOX_ACCESS_TOKEN</code> in the backend environment to scan market data.</div>}
 
-        <section className="metrics" aria-label="Market scan summary">
-          <article className="metric metric-universe">
-            <div className="metric-label">UNIVERSE <Database size={15} /></div>
-            <div className="metric-value">100<span> stocks</span></div>
-            <div className="metric-foot">NIFTY 100 CONSTITUENTS</div>
-          </article>
-          <article className="metric metric-signals">
-            <div className="metric-label">ACTIVE SIGNALS <TrendingUp size={15} /></div>
-            <div className="metric-value">{latest?.signal_count ?? '—'}<span> matches</span></div>
-            <div className="metric-foot">6 SMA CROSSED ABOVE 30 SMA</div>
-          </article>
-          <article className="metric metric-scanned">
-            <div className="metric-label">LAST SCAN <Clock3 size={15} /></div>
-            <div className="metric-value metric-date">{latest ? formatTime(latest.started_at) : 'Awaiting scan'}</div>
-            <div className="metric-foot">{latest ? `${latest.scanned_count} SYMBOLS CHECKED` : 'NO SCAN RUN IN THIS SESSION'}</div>
-          </article>
-          <article className="metric metric-trades">
-            <div className="metric-label">TRADE LOG <ShieldCheck size={15} /></div>
-            <div className="metric-value">{trades.length}<span> logged</span></div>
-            <div className="metric-foot">LOCAL ACTIVITY RECORD</div>
-          </article>
-        </section>
+        {view === 'overview' && <>
+          <section className="metrics" aria-label="Market scan summary">
+            <article className="metric metric-universe">
+              <div className="metric-label">UNIVERSE <Database size={15} /></div>
+              <div className="metric-value">100<span> stocks</span></div>
+              <div className="metric-foot">NIFTY 100 CONSTITUENTS</div>
+            </article>
+            <article className="metric metric-signals">
+              <div className="metric-label">ACTIVE SIGNALS <TrendingUp size={15} /></div>
+              <div className="metric-value">{latest?.signal_count ?? '—'}<span> matches</span></div>
+              <div className="metric-foot">6 SMA CROSSED ABOVE 30 SMA</div>
+            </article>
+            <article className="metric metric-scanned">
+              <div className="metric-label">LAST SCAN <Clock3 size={15} /></div>
+              <div className="metric-value metric-date">{latest ? formatTime(latest.started_at) : 'Awaiting scan'}</div>
+              <div className="metric-foot">{latest ? `${latest.scanned_count} SYMBOLS CHECKED` : 'NO SCAN RUN IN THIS SESSION'}</div>
+            </article>
+            <article className="metric metric-trades">
+              <div className="metric-label">TRADE LOG <ShieldCheck size={15} /></div>
+              <div className="metric-value">{trades.length}<span> logged</span></div>
+              <div className="metric-foot">LOCAL ACTIVITY RECORD</div>
+            </article>
+          </section>
 
-        <section className="content-grid">
-          <article className="panel signals-panel" id="signals">
-            <div className="panel-heading">
-              <div><div className="section-index">01 / SCAN OUTPUT</div><h2>Crossover signals</h2></div>
-              <div className="panel-meta"><span className="live-indicator" /> {signals.length} RESULTS</div>
-            </div>
-            <div className="table-wrap">
-              <table>
-                <thead><tr><th>INSTRUMENT</th><th>LAST PRICE</th><th>SMA 6</th><th>SMA 30</th><th>4H CHANGE</th><th>SETUP</th></tr></thead>
-                <tbody>
-                  {signals.map((signal) => <tr key={signal.symbol}>
-                    <td><div className="instrument-name">{signal.symbol}</div><div className="instrument-company">{signal.company}</div></td>
-                    <td className="number-cell">{money(signal.close)}</td><td className="number-cell">{money(signal.sma6)}</td><td className="number-cell">{money(signal.sma30)}</td>
-                    <td className={signal.change_percent >= 0 ? 'positive number-cell' : 'negative number-cell'}>{signal.change_percent >= 0 ? <ArrowUpRight size={14} /> : <ArrowDownRight size={14} />}{Math.abs(signal.change_percent).toFixed(2)}%</td>
-                    <td><span className="setup-tag"><span /> BULLISH CROSS</span></td>
-                  </tr>)}
-                  {signals.length === 0 && <tr><td className="empty-cell" colSpan={6}>
-                    <div className="empty-mark"><ScanLine size={21} /></div>
-                    <strong>{latest ? 'No crossover signals found' : 'Waiting for your first scan'}</strong>
-                    <span>{latest ? 'No Nifty 100 stock met the 4H crossover rule on the latest completed candle.' : 'Run a scan to check the Nifty 100 against the 6 / 30 SMA rule.'}</span>
-                  </td></tr>}
-                </tbody>
-              </table>
-            </div>
-            <div className="panel-foot"><span>RULE: SMA 6 CROSSES ABOVE SMA 30 AND CLOSE &gt; SMA 30</span><span>4 HOUR · COMPLETED BAR</span></div>
-          </article>
-
-          <aside className="side-stack">
+          <section className="content-grid">
             <article className="panel rule-panel">
-              <div className="section-index">02 / STRATEGY</div><h2>Signal conditions</h2>
+              <div className="section-index">SIGNAL RULE</div><h2>Signal conditions</h2>
               <div className="rule-step"><span className="rule-number">01</span><span>Instrument belongs to the Nifty 100 universe</span><Check size={15} /></div>
               <div className="rule-step"><span className="rule-number">02</span><span>6-period SMA crosses above 30-period SMA</span><Check size={15} /></div>
               <div className="rule-step"><span className="rule-number">03</span><span>Latest completed 4-hour close is above SMA 30</span><Check size={15} /></div>
@@ -199,23 +216,51 @@ function App() {
             </article>
 
             <article className="panel history-panel">
-              <div className="history-heading"><div><div className="section-index">03 / RECENT RUNS</div><h2>Scan history</h2></div><span className="history-count">{scans.length.toString().padStart(2, '0')}</span></div>
+              <div className="history-heading"><div><div className="section-index">RECENT RUNS</div><h2>Scan history</h2></div><span className="history-count">{scans.length.toString().padStart(2, '0')}</span></div>
               {scans.length === 0 ? <div className="history-empty">Your completed scans will appear here.</div> : scans.slice(0, 5).map((scan, index) => (
                 <div className="history-row" key={scan.id}><span className={`history-symbol ${index === 0 ? 'history-symbol-current' : ''}`}>{String(scan.signal_count).padStart(2, '0')}</span><span className="history-label"><b>{scan.signal_count} signals</b><small>{formatTime(scan.started_at)}</small></span><span className="history-universe">{scan.scanned_count}<small>CHECKED</small></span></div>
               ))}
             </article>
-          </aside>
-        </section>
+          </section>
+        </>}
 
-        <section className="panel trades-panel" id="trades">
-          <div className="panel-heading"><div><div className="section-index">04 / EXECUTION RECORD</div><h2>Trade log</h2></div><span className="log-label"><ShieldCheck size={14} /> MANUAL / SCRIPT LOG</span></div>
+        {view === 'signals' && <article className="panel signals-panel">
+          <div className="panel-heading">
+            <div><div className="section-index">SCAN OUTPUT</div><h2>Crossover signals</h2></div>
+            <div className="panel-meta"><span className="live-indicator" /> {signals.length} RESULTS</div>
+          </div>
+          <div className="table-wrap">
+            <table>
+              <thead><tr><th>INSTRUMENT</th><th>LAST PRICE</th><th>SMA 6</th><th>SMA 30</th><th>4H CHANGE</th><th>SETUP</th></tr></thead>
+              <tbody>
+                {signals.map((signal) => <tr key={signal.symbol}>
+                  <td><div className="instrument-name">{signal.symbol}</div><div className="instrument-company">{signal.company}</div></td>
+                  <td className="number-cell">{money(signal.close)}</td><td className="number-cell">{money(signal.sma6)}</td><td className="number-cell">{money(signal.sma30)}</td>
+                  <td className={signal.change_percent >= 0 ? 'positive number-cell' : 'negative number-cell'}>{signal.change_percent >= 0 ? <ArrowUpRight size={14} /> : <ArrowDownRight size={14} />}{Math.abs(signal.change_percent).toFixed(2)}%</td>
+                  <td><span className="setup-tag"><span /> BULLISH CROSS</span></td>
+                </tr>)}
+                {signals.length === 0 && <tr><td className="empty-cell" colSpan={6}>
+                  <div className="empty-mark"><ScanLine size={21} /></div>
+                  <strong>{latest ? 'No crossover signals found' : 'Waiting for your first scan'}</strong>
+                  <span>{latest ? 'No Nifty 100 stock met the 4H crossover rule on the latest completed candle.' : 'Run a scan to check the Nifty 100 against the 6 / 30 SMA rule.'}</span>
+                </td></tr>}
+              </tbody>
+            </table>
+          </div>
+          <div className="panel-foot"><span>RULE: SMA 6 CROSSES ABOVE SMA 30 AND CLOSE &gt; SMA 30</span><span>4 HOUR · COMPLETED BAR</span></div>
+        </article>}
+
+        {view === 'trades' && <section className="panel trades-panel">
+          <div className="panel-heading"><div><div className="section-index">EXECUTION RECORD</div><h2>Trade log</h2></div><span className="log-label"><ShieldCheck size={14} /> MANUAL / SCRIPT LOG</span></div>
           <div className="trade-grid trade-grid-head"><span>TIME</span><span>INSTRUMENT</span><span>SIDE</span><span>QUANTITY</span><span>PRICE</span><span>STATUS</span></div>
           {trades.length === 0 ? <div className="trade-empty">No trades recorded. The current sandbox smoke test places and cancels its test order; it does not create an execution history.</div> : trades.map((trade) => (
             <div className="trade-grid trade-row" key={trade.id}><span>{formatTime(trade.timestamp)}</span><b>{trade.symbol}</b><span className={trade.side === 'BUY' ? 'positive' : 'negative'}>{trade.side}</span><span>{trade.quantity}</span><span>{money(trade.price)}</span><span className="trade-status">{trade.status}</span></div>
           ))}
-        </section>
+        </section>}
 
-        <StrategyLab tokenReady={apiOnline && tokenReady} />
+        <div className="workspace-lab" hidden={view !== 'lab'}>
+          <StrategyLab tokenReady={apiOnline && tokenReady} />
+        </div>
 
         <footer className="page-footer"><span>CROSSLINE <i>·</i> NIFTY 100 MARKET MONITOR</span><span><span className={apiOnline ? 'footer-dot connected' : 'footer-dot'} />{apiOnline ? 'FASTAPI CONNECTION ACTIVE' : 'WAITING FOR API'}</span></footer>
       </main>

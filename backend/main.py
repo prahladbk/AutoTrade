@@ -34,6 +34,7 @@ NIFTY100_URLS = (
 )
 INSTRUMENTS_URL = "https://assets.upstox.com/market-quote/instruments/exchange/NSE.json.gz"
 CANDLE_TIMEFRAMES = {
+    "3m": ("minutes", 3, 28),
     "5m": ("minutes", 5, 28),
     "15m": ("minutes", 15, 28),
     "30m": ("minutes", 30, 85),
@@ -89,6 +90,15 @@ class StrategyPresetRequest(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     strategy_id: str
     config: dict = Field(default_factory=dict)
+
+
+class PaperSessionRequest(BaseModel):
+    strategy_id: str
+    config: dict = Field(default_factory=dict)
+
+
+PAPER_SYMBOL_CAP = 10
+_paper_stops: dict[str, threading.Event] = {}
 
 
 def db_connect() -> sqlite3.Connection:
@@ -149,6 +159,27 @@ def init_db() -> None:
                 error_text TEXT,
                 created_at TEXT NOT NULL,
                 completed_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS paper_sessions (
+                id TEXT PRIMARY KEY,
+                strategy_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                config_json TEXT NOT NULL,
+                open_json TEXT,
+                last_error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT,
+                stopped_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS paper_trades (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                direction TEXT NOT NULL,
+                entry_time TEXT NOT NULL,
+                exit_time TEXT,
+                status TEXT NOT NULL,
+                payload_json TEXT NOT NULL
             );
             """
         )
@@ -440,7 +471,7 @@ def normalize_workbench_config(strategy_id: str, supplied: dict) -> dict:
 
     timeframe = common["timeframe"]
     if timeframe not in CANDLE_TIMEFRAMES:
-        raise HTTPException(status_code=422, detail="Supported timeframes are 5m, 15m, 30m, 1h, and 4h.")
+        raise HTTPException(status_code=422, detail="Supported timeframes are 3m, 5m, 15m, 30m, 1h, and 4h.")
     if common["start_date"] and common["end_date"]:
         try:
             start_date = date.fromisoformat(common["start_date"])
@@ -459,8 +490,8 @@ def normalize_workbench_config(strategy_id: str, supplied: dict) -> dict:
 
     if common["period_days"] < 1 or common["period_days"] > 365:
         raise HTTPException(status_code=422, detail="Backtest history must be between 1 and 365 days.")
-    if timeframe in {"5m", "15m"} and common["period_days"] > 28:
-        raise HTTPException(status_code=422, detail="Upstox historical 5/15-minute candles are limited to the latest month. Choose 30m, 1h, or 4h for longer history.")
+    if timeframe in {"3m", "5m", "15m"} and common["period_days"] > 28:
+        raise HTTPException(status_code=422, detail="Upstox historical 3/5/15-minute candles are limited to the latest month. Choose 30m, 1h, or 4h for longer history.")
     try:
         fast_period = int(strategy.get("fast_period", 2))
         slow_period = int(strategy.get("slow_period", 3))
@@ -474,7 +505,8 @@ def normalize_workbench_config(strategy_id: str, supplied: dict) -> dict:
     except (TypeError, ValueError) as error:
         raise HTTPException(status_code=422, detail="Numeric strategy and risk settings must contain valid numbers.") from error
     if fast_period >= slow_period:
-        raise HTTPException(status_code=422, detail="Fast SMA period must be lower than slow SMA period.")
+        period_name = "EMA" if strategy_id == "ema_supply_demand" else "SMA"
+        raise HTTPException(status_code=422, detail=f"Fast {period_name} period must be lower than slow {period_name} period.")
     if reward_to_risk <= 0 or reward_to_risk > 10:
         raise HTTPException(status_code=422, detail="Target reward-to-risk must be greater than 0 and at most 10.")
     if risk_percent <= 0 or risk_percent > 2:
@@ -709,6 +741,160 @@ def export_backtest_trades(run_id: str) -> Response:
         for trade in trades:
             writer.writerow({key: json.dumps(value) if isinstance(value, (dict, list)) else value for key, value in trade.items()})
     return Response(output.getvalue(), media_type="text/csv", headers={"Content-Disposition": f'attachment; filename="crossline-{run_id}.csv"'})
+
+
+def select_paper_symbols(config: dict) -> list[str]:
+    common = config.get("common", {})
+    symbols = []
+    for symbol in common.get("symbols") or []:
+        text = str(symbol).upper().strip()
+        if text and text not in symbols:
+            symbols.append(text)
+    if common.get("universe") != "selected_symbols":
+        raise HTTPException(status_code=422, detail="Paper simulation watches a selected symbol list, not the full universe.")
+    if not symbols:
+        raise HTTPException(status_code=422, detail="Select at least one stock for the paper session.")
+    return symbols[:PAPER_SYMBOL_CAP]
+
+
+def _paper_once(session_id: str, token: str) -> None:
+    """Refresh simulated fills from completed candles. This never calls an order endpoint."""
+    with db_connect() as connection:
+        row = connection.execute("SELECT * FROM paper_sessions WHERE id = ?", (session_id,)).fetchone()
+    if row is None or row["status"] != "RUNNING":
+        return
+    config = json.loads(row["config_json"])
+    common = config["common"]
+    symbols = set(select_paper_symbols(config))
+    universe = [item for item in load_all_equity_universe() if item["symbol"] in symbols]
+    end_date = datetime.now(INDIA_TZ).date()
+    start_date = max(date.fromisoformat(common["start_date"]), end_date - timedelta(days=27))
+    candles_by_symbol = {}
+    for instrument in universe:
+        candles_by_symbol[instrument["symbol"]] = fetch_candles(instrument, token, end_date, start_date, common["timeframe"])
+    if not candles_by_symbol:
+        raise RuntimeError("No candles were returned for the paper session.")
+    result = run_event_backtest(candles_by_symbol, config["strategy_id"], config, close_open_positions=False)
+    now = datetime.now(timezone.utc).isoformat()
+    with db_connect() as connection:
+        current = connection.execute("SELECT status FROM paper_sessions WHERE id = ?", (session_id,)).fetchone()
+        if current is None or current["status"] != "RUNNING":
+            return
+        connection.execute("DELETE FROM paper_trades WHERE session_id = ?", (session_id,))
+        for trade in result["trades"]:
+            if trade.get("exit_reason") == "END_OF_DATA":
+                continue
+            connection.execute(
+                "INSERT INTO paper_trades (session_id, symbol, direction, entry_time, exit_time, status, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (session_id, trade["symbol"], trade["direction"], trade["entry_time"], trade["exit_time"], "PAPER", json.dumps(trade)),
+            )
+        connection.execute(
+            "UPDATE paper_sessions SET open_json = ?, last_error = NULL, updated_at = ? WHERE id = ? AND status = 'RUNNING'",
+            (json.dumps(result.get("open_positions") or []), now, session_id),
+        )
+
+
+def _paper_loop(session_id: str, token: str) -> None:
+    stop = _paper_stops.get(session_id)
+    while stop is not None and not stop.is_set():
+        try:
+            _paper_once(session_id, token)
+        except Exception as error:
+            with db_connect() as connection:
+                connection.execute(
+                    "UPDATE paper_sessions SET last_error = ?, updated_at = ? WHERE id = ?",
+                    (f"{type(error).__name__}: {error}", datetime.now(timezone.utc).isoformat(), session_id),
+                )
+        if stop.wait(60):
+            break
+
+
+def _paper_payload(row: sqlite3.Row, trades: list[sqlite3.Row]) -> dict:
+    return {
+        "id": row["id"],
+        "strategy_id": row["strategy_id"],
+        "status": row["status"],
+        "configuration": json.loads(row["config_json"]),
+        "open_positions": json.loads(row["open_json"]) if row["open_json"] else [],
+        "last_error": row["last_error"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "stopped_at": row["stopped_at"],
+        "trades": [json.loads(trade["payload_json"]) for trade in trades],
+        "order_placement": "disabled",
+    }
+
+
+@app.post("/api/paper/sessions", status_code=201)
+def start_paper_session(request: PaperSessionRequest) -> dict:
+    if request.strategy_id != "ema_supply_demand":
+        raise HTTPException(status_code=422, detail="Paper simulation is available for EMA 7/21 + Supply/Demand only.")
+    token = os.environ.get("UPSTOX_ACCESS_TOKEN")
+    if not token:
+        raise HTTPException(status_code=503, detail="UPSTOX_ACCESS_TOKEN is not configured in backend/.env.")
+    config = normalize_workbench_config(request.strategy_id, request.config)
+    select_paper_symbols(config)
+    with db_connect() as connection:
+        running = connection.execute("SELECT id FROM paper_sessions WHERE status = 'RUNNING'").fetchone()
+    if running:
+        raise HTTPException(status_code=409, detail="A paper session is already running.")
+    session_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    with db_connect() as connection:
+        connection.execute(
+            "INSERT INTO paper_sessions (id, strategy_id, status, config_json, open_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (session_id, request.strategy_id, "RUNNING", json.dumps(config), "[]", now, now),
+        )
+    stop = threading.Event()
+    _paper_stops[session_id] = stop
+    threading.Thread(target=_paper_loop, args=(session_id, token), daemon=True).start()
+    return {"id": session_id, "status": "RUNNING", "order_placement": "disabled", "configuration": config}
+
+
+@app.get("/api/paper/sessions/current")
+def current_paper_session() -> dict:
+    with db_connect() as connection:
+        row = connection.execute("SELECT * FROM paper_sessions ORDER BY created_at DESC LIMIT 1").fetchone()
+        trades = connection.execute(
+            "SELECT * FROM paper_trades WHERE session_id = ? ORDER BY entry_time",
+            (row["id"],),
+        ).fetchall() if row else []
+    if row is None:
+        return {"status": "NONE", "trades": [], "open_positions": [], "order_placement": "disabled"}
+    return _paper_payload(row, trades)
+
+
+@app.post("/api/paper/sessions/{session_id}/stop")
+def stop_paper_session(session_id: str) -> dict:
+    stop = _paper_stops.get(session_id)
+    if stop:
+        stop.set()
+    now = datetime.now(timezone.utc).isoformat()
+    with db_connect() as connection:
+        cursor = connection.execute(
+            "UPDATE paper_sessions SET status = 'STOPPED', stopped_at = ?, updated_at = ? WHERE id = ? AND status = 'RUNNING'",
+            (now, now, session_id),
+        )
+        row = connection.execute("SELECT * FROM paper_sessions WHERE id = ?", (session_id,)).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Paper session not found.")
+    if cursor.rowcount == 0 and row["status"] != "STOPPED":
+        raise HTTPException(status_code=409, detail="Paper session is not running.")
+    return {"id": session_id, "status": row["status"], "order_placement": "disabled"}
+
+
+@app.get("/api/backtests/{run_id}/chart")
+def backtest_chart(run_id: str, symbol: str) -> dict:
+    with db_connect() as connection:
+        row = connection.execute("SELECT result_json FROM backtest_runs WHERE id = ?", (run_id,)).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Backtest run not found.")
+    if not row["result_json"]:
+        raise HTTPException(status_code=409, detail="Backtest results are not ready.")
+    chart = json.loads(row["result_json"]).get("charts", {}).get(symbol.upper())
+    if chart is None:
+        raise HTTPException(status_code=404, detail="No cached chart for that symbol. Charts are stored for symbols that traded.")
+    return chart
 
 
 @app.get("/api/backtests/{run_id}/stocks")
