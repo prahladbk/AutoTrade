@@ -700,6 +700,32 @@ def list_backtests() -> list[dict]:
     return [{**dict(row), "configuration": json.loads(row["config_json"])} for row in rows]
 
 
+@app.delete("/api/backtests")
+def delete_backtest_history() -> dict:
+    with db_connect() as connection:
+        rows = connection.execute("SELECT id FROM backtest_runs WHERE status != 'RUNNING'").fetchall()
+        connection.execute("DELETE FROM backtest_runs WHERE status != 'RUNNING'")
+    removed = [row["id"] for row in rows]
+    with _cancel_lock:
+        for run_id in removed:
+            _cancel_events.pop(run_id, None)
+    return {"deleted": len(removed)}
+
+
+@app.delete("/api/backtests/{run_id}")
+def delete_backtest(run_id: str) -> dict:
+    with db_connect() as connection:
+        row = connection.execute("SELECT status FROM backtest_runs WHERE id = ?", (run_id,)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Backtest run not found.")
+        if row["status"] == "RUNNING":
+            raise HTTPException(status_code=409, detail="Cancel the running backtest before deleting it.")
+        connection.execute("DELETE FROM backtest_runs WHERE id = ?", (run_id,))
+    with _cancel_lock:
+        _cancel_events.pop(run_id, None)
+    return {"id": run_id, "deleted": True}
+
+
 @app.get("/api/backtests/{run_id}")
 def get_backtest(run_id: str) -> dict:
     with db_connect() as connection:

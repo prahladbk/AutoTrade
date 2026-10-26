@@ -341,6 +341,46 @@ function StrategyLab({ tokenReady }: { tokenReady: boolean }) {
     } catch (caught) { setError(caught instanceof Error ? caught.message : 'Could not compare runs.') }
   }
 
+  function forgetRun(runId: string) {
+    setCompareIds((current) => current.filter((id) => id !== runId))
+    setComparison((current) => {
+      const listed = (current?.runs as Array<Result & { id?: string }> | undefined) ?? []
+      return listed.some((run) => run.run_id === runId || run.id === runId) ? null : current
+    })
+    setResults((current) => {
+      const next = { ...current }
+      for (const [key, result] of Object.entries(next)) {
+        if (result.run_id === runId) delete next[key]
+      }
+      return next
+    })
+    setActiveRunId((current) => current === runId ? '' : current)
+    setSelectedTrade(null)
+  }
+
+  async function deleteRun(run: Run) {
+    const name = strategies.find((strategy) => strategy.key === run.strategy_id)?.name ?? run.strategy_id
+    if (!window.confirm(`Delete the ${name} run from ${timeLabel(run.created_at)}? Its trades and results will be removed.`)) return
+    try {
+      await requestJson(`${API}/backtests/${run.id}`, { method: 'DELETE' })
+      forgetRun(run.id)
+      await loadRuns()
+      setError('')
+    } catch (caught) { setError(caught instanceof Error ? caught.message : 'Could not delete this run.') }
+  }
+
+  async function clearHistory() {
+    const finished = runs.filter((run) => run.status !== 'RUNNING')
+    if (!finished.length) return
+    if (!window.confirm(`Delete ${finished.length} finished run${finished.length === 1 ? '' : 's'}? A run that is still going stays on the list.`)) return
+    try {
+      await requestJson(`${API}/backtests`, { method: 'DELETE' })
+      for (const run of finished) forgetRun(run.id)
+      await loadRuns()
+      setError('')
+    } catch (caught) { setError(caught instanceof Error ? caught.message : 'Could not clear run history.') }
+  }
+
   const visibleTrades = (activeResult?.trades ?? []).filter((trade) => {
     const filterMatch = tradeFilter === 'all' || (tradeFilter === 'winners' && trade.gross_pnl > 0) || (tradeFilter === 'losers' && trade.gross_pnl < 0)
     return filterMatch && trade.symbol.toLowerCase().includes(tradeSearch.toLowerCase())
@@ -445,11 +485,12 @@ function StrategyLab({ tokenReady }: { tokenReady: boolean }) {
       {error && <div className="lab-error" role="alert">{error}</div>}
 
       <div className="lab-history">
-        <div className="lab-subheading"><h3>Completed runs</h3><div className="comparison-controls"><span>{runs.length} runs</span><button className="quiet-button" disabled={compareIds.length < 2} onClick={() => void compareRuns()}>Compare selected</button></div></div>
-        <div className="run-list">{runs.map((run) => <div className="run-history-row" key={run.id}>
+        <div className="lab-subheading"><h3>Completed runs</h3><div className="comparison-controls"><span>{runs.length} runs</span><button className="quiet-button" disabled={compareIds.length < 2} onClick={() => void compareRuns()}>Compare selected</button><button type="button" className="quiet-button danger-button" disabled={!runs.some((run) => run.status !== 'RUNNING')} onClick={() => void clearHistory()}><Trash2 size={13} /> Clear history</button></div></div>
+        <div className="run-list">{runs.length === 0 && <div className="history-empty">Finished runs will appear here. Delete one, or clear the list, when you no longer need it.</div>}{runs.map((run) => <div className="run-history-row" key={run.id}>
           <input type="checkbox" aria-label={`Select run ${run.id} for comparison`} checked={compareIds.includes(run.id)} onChange={(event) => setCompareIds((current) => event.target.checked ? [...current, run.id].slice(-6) : current.filter((id) => id !== run.id))} />
           <button type="button" className="run-open" onClick={() => void loadRun(run.id)}><b>{strategies.find((strategy) => strategy.key === run.strategy_id)?.name ?? run.strategy_id}</b><small>{timeLabel(run.created_at)} · {run.status}</small></button>
           <span className={`run-state ${run.status.toLowerCase()}`}>{run.status}</span>
+          <button type="button" className="quiet-button danger-button run-delete" aria-label={`Delete ${strategies.find((strategy) => strategy.key === run.strategy_id)?.name ?? run.strategy_id} run from ${timeLabel(run.created_at)}`} title={run.status === 'RUNNING' ? 'Cancel this run before deleting it' : 'Delete this run'} disabled={run.status === 'RUNNING'} onClick={() => void deleteRun(run)}><Trash2 size={13} /></button>
         </div>)}</div>
       </div>
       {comparison && <div className="comparison-result"><b>Comparison</b><span>{String(comparison.warning ?? 'Runs use matching date, timeframe, and capital assumptions.')}</span><div>{(comparison.runs as Result[]).map((run) => <span key={run.run_id}>{run.strategy_id}: {run.net_pnl === null ? `gross ${money(run.gross_pnl)}` : money(run.net_pnl)} · DD {run.max_drawdown_percent}% · {run.trade_count} trades</span>)}</div></div>}

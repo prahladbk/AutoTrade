@@ -265,7 +265,8 @@ tbody tr:last-child td { border-bottom: 0; }
 .lab-subheading h3 span { margin-left: 6px; color: #92968a; font: 8px var(--mono); }
 .comparison-controls { display: flex; align-items: center; gap: 10px; color: #8c9186; font: 8px var(--mono); }
 .run-list { display: grid; gap: 0; margin-top: 9px; border-top: 1px solid var(--line); }
-.run-history-row { display: grid; grid-template-columns: 19px minmax(0, 1fr) auto; gap: 9px; align-items: center; min-height: 44px; border-bottom: 1px solid #eeefe8; }
+.run-history-row { display: grid; grid-template-columns: 19px minmax(0, 1fr) auto auto; gap: 9px; align-items: center; min-height: 44px; border-bottom: 1px solid #eeefe8; }
+.run-delete { padding-inline: 7px; }
 .run-history-row > input { accent-color: var(--green); }
 .run-open { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; padding: 7px 0; border: 0; color: var(--ink); background: transparent; text-align: left; cursor: pointer; }
 .run-open b { font-size: 10px; font-weight: 600; }

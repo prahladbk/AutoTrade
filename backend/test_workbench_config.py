@@ -14,9 +14,13 @@ from backend.main import (
     StrategyPresetRequest,
     cancel_backtest,
     create_backtest,
+    db_connect,
+    delete_backtest,
+    delete_backtest_history,
     delete_strategy_preset,
     get_backtest,
     get_strategy_presets,
+    list_backtests,
     normalize_workbench_config,
     save_strategy_preset,
     select_paper_symbols,
@@ -90,6 +94,35 @@ class WorkbenchConfigTests(unittest.TestCase):
         self.assertEqual(len(tasks.tasks), 1)
         self.assertEqual(get_backtest(run["id"])["status"], "RUNNING")
         self.assertEqual(cancel_backtest(run["id"])["status"], "CANCELLING")
+
+    def test_finished_runs_can_be_deleted_while_a_live_run_stays(self):
+        with db_connect() as connection:
+            connection.execute(
+                "INSERT INTO backtest_runs (id, strategy_id, status, config_json, created_at, completed_at) VALUES (?, ?, ?, ?, ?, ?)",
+                ("done-1", "sma_crossover", "COMPLETED", "{}", "2026-01-01T00:00:00+00:00", "2026-01-01T00:01:00+00:00"),
+            )
+            connection.execute(
+                "INSERT INTO backtest_runs (id, strategy_id, status, config_json, created_at, completed_at) VALUES (?, ?, ?, ?, ?, ?)",
+                ("done-2", "sma_crossover", "FAILED", "{}", "2026-01-03T00:00:00+00:00", "2026-01-03T00:01:00+00:00"),
+            )
+            connection.execute(
+                "INSERT INTO backtest_runs (id, strategy_id, status, config_json, created_at) VALUES (?, ?, ?, ?, ?)",
+                ("live-kept", "sma_crossover", "RUNNING", "{}", "2026-01-04T00:00:00+00:00"),
+            )
+
+        self.assertTrue(delete_backtest("done-1")["deleted"])
+        with self.assertRaises(HTTPException) as missing:
+            get_backtest("done-1")
+        self.assertEqual(missing.exception.status_code, 404)
+        with self.assertRaises(HTTPException) as running:
+            delete_backtest("live-kept")
+        self.assertEqual(running.exception.status_code, 409)
+
+        removed = delete_backtest_history()
+        self.assertGreaterEqual(removed["deleted"], 1)
+        remaining = {row["id"]: row["status"] for row in list_backtests()}
+        self.assertNotIn("done-2", remaining)
+        self.assertEqual(remaining["live-kept"], "RUNNING")
 
 
 if __name__ == "__main__":
